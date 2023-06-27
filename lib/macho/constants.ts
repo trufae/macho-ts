@@ -126,7 +126,7 @@ constants.cpuSubType = {
     }
 };
 
-function cpuSubtypeIntel(a: any, b: any, name: string) {
+function cpuSubtypeIntel(a: number, b: number, name: string) {
     constants.cpuSubType.i386[a + (b << 4)] = name;
 }
 ([
