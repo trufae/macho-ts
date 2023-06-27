@@ -27,6 +27,7 @@
   "homepage": "https://github.com/indutny/macho",
   "devDependencies": {
     "@types/mocha": "*",
+    "@types/node": "^20.3.2",
     "ts-mocha": "*",
     "typescript": "^5.1.3"
   },
