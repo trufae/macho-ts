@@ -1,4 +1,4 @@
-import macho from "../lib/macho.js";
+import macho from "../dist/macho.js";
 import fs from "fs";
 import assert from "assert";
 

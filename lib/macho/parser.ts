@@ -1,83 +1,75 @@
-var util = require('util');
 import { Reader } from "./endian-reader.js";
 import { constants } from "./constants.js";
 
-
 export class Parser extends Reader {
-    construct() {
-    }
-    execute(buf: any) {
-        var hdr: any = this.parseHead(buf);
-        if (!hdr)
-            throw new Error('File not in a mach-o format');
-
+    execute(buf: Buffer) : Header {
+        var hdr = this.parseHead(buf);
+        if (typeof hdr === "boolean") {
+            if (hdr === false) {
+                throw new Error('File not in a mach-o format');
+            }
+            throw new Error("Unhandled case");
+        }
         hdr.cmds = this.parseCommands(hdr, hdr.body, buf);
         delete hdr.body;
-
         return hdr;
     }
 
-    parseLCStr(buf: any, off: any) {
-        if (off + 4 > buf.length)
+    parseLCStr(buf: Buffer, off: number): string {
+        if (off + 4 > buf.length) {
             throw new Error('lc_str OOB');
-
+        }
         var offset = super.readUInt32(buf, off) - 8;
-        if (offset > buf.length)
+        if (offset > buf.length) {
             throw new Error('lc_str offset OOB');
-
+        }
         return this.parseCStr(buf.slice(offset));
     }
-    parseHead(buf: any) {
-        if (buf.length < 7 * 4)
-            return false;
 
-        var magic = buf.readUInt32LE(0);
-        var bits;
-        if (magic === 0xfeedface || magic === 0xcefaedfe)
-            bits = 32;
-        else if (magic === 0xfeedfacf || magic == 0xcffaedfe)
-            bits = 64;
-        else
+    // TODO return null or optional instead of the original boolean
+    parseHead(buf: Buffer): Header | boolean {
+        if (buf.length < 7 * 4) {
             return false;
-
-        if ((magic & 0xff) == 0xfe) {
-            super.setEndian('be');
-        } else {
-            super.setEndian('le');
         }
 
-        if (bits === 64 && buf.length < 8 * 4)
-            return false;
+        const magic = buf.readUInt32LE(0);
+        let bits = -1;
+        switch (magic) {
+            case 0xfeedface:
+            case 0xcefaedfe:
+                bits = 32;
+                break;
+            case 0xfeedfacf:
+            case 0xcffaedfe:
+                bits = 64;
+                break;
+            default:
+                return false;
+        }
 
-        var cputype = constants.cpuType[super.readInt32(buf, 4)];
-        var cpusubtype = super.readInt32(buf, 8);
-        var filetype = super.readUInt32(buf, 12);
-        var ncmds = super.readUInt32(buf, 16);
-        var sizeofcmds = super.readUInt32(buf, 20);
-        var flags = super.readUInt32(buf, 24);
+        const endianType = ((magic & 0xff) == 0xfe)? "be": "le";
+        super.setEndian(endianType);
+
+        if (bits === 64 && buf.length < 8 * 4) {
+            return false;
+        }
+
+        const cputype = constants.cpuType[super.readInt32(buf, 4)];
+        let cpusubtype = super.readInt32(buf, 8);
+        const filetype = super.readUInt32(buf, 12);
+        const ncmds = super.readUInt32(buf, 16);
+        const sizeofcmds = super.readUInt32(buf, 20);
+        const flags = super.readUInt32(buf, 24);
 
         // Get endian
-        var endian;
-        if ((cpusubtype & constants.endian.multiple) === constants.endian.multiple)
-            endian = 'multiple';
-        else if (cpusubtype & constants.endian.be)
-            endian = 'be';
-        else
-            endian = 'le';
-
+        const endian = endianFromCpu(cpusubtype);
         cpusubtype &= constants.cpuSubType.mask;
 
         // Get subtype
-        var subtype;
-        if (endian === 'multiple')
-            subtype = 'all';
-        else if (cpusubtype === 0)
-            subtype = 'none';
-        else
-            subtype = constants.cpuSubType[cputype][cpusubtype];
+        const subtype = subtypeFromCpu(endian, cputype, cpusubtype);
 
         // Stringify flags
-        var flagMap = this.mapFlags(flags, constants.flags);
+        const flagMap = this.mapFlags(flags, constants.flags);
 
         return {
             bits: bits,
@@ -98,71 +90,74 @@ export class Parser extends Reader {
         };
     }
 
-    parseMain(type: any, buf: any) {
-        if (buf.length < 16)
+    parseMain(type: string, buf: Buffer): Main {
+        if (buf.length < 16) {
             throw new Error('main OOB');
-
+        }
         return {
             type: type,
             entryoff: super.readUInt64(buf, 0),
             stacksize: super.readUInt64(buf, 8)
         };
     }
-    mapFlags(value: any, map: any) {
-        var res: any = {};
 
-        for (var bit = 1; (value < 0 || bit <= value) && bit !== 0; bit <<= 1)
-            if (value & bit)
+    mapFlags(value: number, map: any): object {
+        const res: any = {};
+        for (let bit = 1; (value < 0 || bit <= value) && bit !== 0; bit <<= 1) {
+            if (value & bit) {
                 res[map[bit]] = true;
-
+            }
+        }
         return res;
     }
-    parseCommands(hdr: any, buf: any, file: any) {
-        var cmds: any[] = [];
 
+    parseCommands(hdr: any, buf: any, file: any) {
+        const cmds: any[] = [];
         const align: number = (hdr.bits === 32) ? 4 : 8;
 
-        for (var offset = 0, i = 0; offset + 8 < buf.length, i < hdr.ncmds; i++) {
-            var type = constants.cmdType[super.readUInt32(buf, offset)];
-            var size = super.readUInt32(buf, offset + 4) - 8;
+        for (let offset = 0, i = 0; offset + 8 < buf.length, i < hdr.ncmds; i++) {
+            const type = constants.cmdType[super.readUInt32(buf, offset)];
+            const size = super.readUInt32(buf, offset + 4) - 8;
 
-            var fileoff = offset + hdr.hsize;
+            let fileoff = offset + hdr.hsize;
             offset += 8;
             if (offset + size > buf.length) {
                 throw new Error('Command body OOB');
             }
-            var body = buf.slice(offset, offset + size);
+            const body = buf.slice(offset, offset + size);
             offset += size;
-            if (offset & align)
+            if (offset & align) {
                 offset += align - (offset & align);
-
-            var cmd : any = this.parseCommand(type, body, file);
+            }
+            const cmd: any = this.parseCommand(type, body, file);
             cmd.fileoff = fileoff;
             cmds.push(cmd);
         }
 
         return cmds;
     }
-    parseFunctionStarts(type: any, buf: any, file: any) {
-        if (buf.length !== 8)
+    parseFunctionStarts(type: any, buf: any, file: any): FunctionStart {
+        if (buf.length !== 8) {
             throw new Error('function_starts OOB');
+        }
 
-        var dataoff = super.readUInt32(buf, 0);
-        var datasize = super.readUInt32(buf, 4);
-        var data = file.slice(dataoff, dataoff + datasize);
+        const dataoff = super.readUInt32(buf, 0);
+        const datasize = super.readUInt32(buf, 4);
+        const data = file.slice(dataoff, dataoff + datasize);
 
-        var addresses = [];
-        var address = 0; // TODO? use start address / "base address"
+        const addresses = [];
+        let address = 0; // TODO? use start address / "base address"
 
         // read array of uleb128-encoded deltas
-        var delta = 0, shift = 0;
-        for (var i = 0; i < data.length; i++) {
+        let delta = 0;
+        let shift = 0;
+        for (let i = 0; i < data.length; i++) {
             delta |= (data[i] & 0x7f) << shift;
             if ((data[i] & 0x80) !== 0) { // delta value not finished yet
                 shift += 7;
                 if (shift > 24)
                     throw new Error('function_starts delta too large');
-                else if (i + 1 === data.length)
+                if (i + 1 === data.length)
                     throw new Error('function_starts delta truncated');
             } else if (delta === 0) { // end of table
                 break;
@@ -181,12 +176,14 @@ export class Parser extends Reader {
             addresses: addresses
         };
     }
-    parseSegmentCmd(type: any, buf: any, file: any) {
-        var total = type === 'segment' ? 48 : 64;
-        if (buf.length < total)
-            throw new Error('Segment command OOB');
 
-        var name = this.parseCStr(buf.slice(0, 16));
+    parseSegmentCmd(type: any, buf: any, file: any): SegmentCmd {
+        const total = (type === "segment") ? 48 : 64;
+        if (buf.length < total) {
+            throw new Error('Segment command OOB');
+        }
+
+        const name = this.parseCStr(buf.slice(0, 16));
 
         if (type === 'segment') {
             var vmaddr = super.readUInt32(buf, 16);
@@ -208,7 +205,7 @@ export class Parser extends Reader {
             var flags = super.readUInt32(buf, 60);
         }
 
-        function prot(p:any) {
+        function prot(p: any): Protection {
             var res = { read: false, write: false, exec: false };
             if (p !== constants.prot.none) {
                 res.read = (p & constants.prot.read) !== 0;
@@ -221,9 +218,9 @@ export class Parser extends Reader {
         const sectSize = type === 'segment' ? 32 + 9 * 4 : 32 + 8 * 4 + 2 * 8;
         const sections: any = [];
         for (let i = 0, off = total; i < nsects; i++, off += sectSize) {
-            if (off + sectSize > buf.length)
+            if (off + sectSize > buf.length) {
                 throw new Error('Segment OOB');
-
+            }
             const sectname = this.parseCStr(buf.slice(off, off + 16));
             const segname = this.parseCStr(buf.slice(off + 16, off + 32));
 
@@ -279,9 +276,11 @@ export class Parser extends Reader {
             sections: sections
         };
     }
-    parseLinkEdit(type: any, buf: any) {
-        if (buf.length !== 8)
+
+    parseLinkEdit(type: any, buf: Buffer): LinkEdit {
+        if (buf.length !== 8) {
             throw new Error('link_edit OOB');
+        }
 
         return {
             type: type,
@@ -290,55 +289,60 @@ export class Parser extends Reader {
         };
     }
 
-    parseCStr(buf: any) {
-        for (var i = 0; i < buf.length; i++)
-            if (buf[i] === 0)
+    parseCStr(buf: Buffer): string {
+        for (var i = 0; i < buf.length; i++) {
+            if (buf[i] === 0) {
                 break;
+            }
+        }
         return buf.slice(0, i).toString();
     }
 
-    parseCommand(type: any, buf: any, file: any) {
-        if (type === 'segment')
-            return this.parseSegmentCmd(type, buf, file);
-        else if (type === 'segment_64')
-            return this.parseSegmentCmd(type, buf, file);
-        else if (type === 'symtab')
-            return this.parseSymtab(type, buf);
-        else if (type === 'symseg')
-            return this.parseSymseg(type, buf);
-        else if (type === 'encryption_info')
-            return this.parseEncryptionInfo(type, buf);
-        else if (type === 'encryption_info_64')
-            return this.parseEncryptionInfo64(type, buf);
-        else if (type === 'rpath')
-            return this.parseRpath(type, buf);
-        else if (type === 'dysymtab')
-            return this.parseDysymtab(type, buf);
-        else if (type === 'load_dylib' || type === 'id_dylib')
-            return this.parseLoadDylib(type, buf);
-        else if (type === 'load_weak_dylib')
-            return this.parseLoadDylib(type, buf);
-        else if (type === 'load_dylinker' || type === 'id_dylinker')
-            return this.parseLoadDylinker(type, buf);
-        else if (type === 'version_min_macosx' || type === 'version_min_iphoneos')
-            return this.parseVersionMin(type, buf);
-        else if (type === 'code_signature' || type === 'segment_split_info')
-            return this.parseLinkEdit(type, buf);
-        else if (type === 'function_starts')
-            return this.parseFunctionStarts(type, buf, file);
-        else if (type === 'data_in_code')
-            return this.parseLinkEdit(type, buf);
-        else if (type === 'dylib_code_sign_drs')
-            return this.parseLinkEdit(type, buf);
-        else if (type === 'main')
-            return this.parseMain(type, buf);
-        else
-            return { type: type, data: buf };
+    parseCommand(type: string, buf: Buffer, file: any): LoadCommand {
+        switch (type) {
+            case 'segment':
+                return this.parseSegmentCmd(type, buf, file);
+            case 'segment_64':
+                return this.parseSegmentCmd(type, buf, file);
+            case "symtab":
+                return this.parseSymtab(type, buf);
+            case "main":
+                return this.parseMain(type, buf);
+            case "symseg":
+                return this.parseSymseg(type, buf);
+            case "encryption_info":
+                return this.parseEncryptionInfo(type, buf);
+            case "encryption_info_64":
+                return this.parseEncryptionInfo64(type, buf);
+            case "rpath":
+                return this.parseRpath(type, buf);
+            case "dysymtab":
+                return this.parseDysymtab(type, buf);
+            case "id_dylib":
+            case "load_dylib":
+            case "load_weak_dylib":
+                return this.parseLoadDylib(type, buf);
+            case "id_dylinker":
+            case "load_dylinker":
+                return this.parseLoadDylinker(type, buf);
+            case "version_min_macosx":
+            case "version_min_iphoneos":
+                return this.parseVersionMin(type, buf);
+            case "code_signature":
+            case "segment_split_info":
+            case "data_in_code":
+            case "dylib_code_sign_drs":
+                return this.parseLinkEdit(type, buf);
+            case "function_starts":
+                return this.parseFunctionStarts(type, buf, file);
+        }
+        return { type: type, data: buf } as UnknownLoadCommand;
     }
-    parseSymtab(type: any, buf: any) {
-        if (buf.length !== 16)
-            throw new Error('symtab OOB');
 
+    parseSymtab(type: any, buf: Buffer): Symtab {
+        if (buf.length !== 16) {
+            throw new Error('symtab OOB');
+        }
         return {
             type: type,
             symoff: super.readUInt32(buf, 0),
@@ -348,10 +352,10 @@ export class Parser extends Reader {
         };
     }
 
-    parseSymseg(type: any, buf: any) {
-        if (buf.length !== 8)
+    parseSymseg(type: any, buf: any): Symseg {
+        if (buf.length !== 8) {
             throw new Error('symseg OOB');
-
+        }
         return {
             type: type,
             offset: super.readUInt32(buf, 0),
@@ -359,10 +363,10 @@ export class Parser extends Reader {
         };
     }
 
-    parseEncryptionInfo(type: any, buf: any) {
-        if (buf.length !== 12)
+    parseEncryptionInfo(type: any, buf: any): EncryptionInfo {
+        if (buf.length !== 12) {
             throw new Error('encryptinfo OOB');
-
+        }
         return {
             type: type,
             offset: super.readUInt32(buf, 0),
@@ -371,14 +375,14 @@ export class Parser extends Reader {
         };
     }
 
-    parseEncryptionInfo64(type: any, buf: any) {
-        if (buf.length !== 16)
+    parseEncryptionInfo64(type: any, buf: any): EncryptionInfo {
+        if (buf.length !== 16) {
             throw new Error('encryptinfo64 OOB');
-
+        }
         return this.parseEncryptionInfo(type, buf.slice(0, 12));
     }
 
-    parseDysymtab(type: any, buf: any) {
+    parseDysymtab(type: any, buf: any): Dysymtab {
         if (buf.length !== 72) {
             throw new Error('dysymtab OOB');
         }
@@ -406,16 +410,16 @@ export class Parser extends Reader {
         };
     }
 
-    parseLoadDylinker(type: any, buf: any) {
+    parseLoadDylinker(type: any, buf: any): Dylinker {
         return {
             type: type,
             cmd: this.parseLCStr(buf, 0)
         };
     }
 
-    parseRpath(type: any, buf: any) {
+    parseRpath(type: any, buf: any): Rpath {
         if (buf.length < 8)
-            throw new Error('lc_rpath OOB');
+            throw new Error("lc_rpath OOB");
 
         return {
             type: type,
@@ -423,9 +427,9 @@ export class Parser extends Reader {
         };
     }
 
-    parseLoadDylib(type: any, buf: any) {
+    parseLoadDylib(type: any, buf: any): LoadDylib {
         if (buf.length < 16) {
-            throw new Error('load_dylib OOB');
+            throw new Error("load_dylib OOB");
         }
         return {
             type: type,
@@ -436,10 +440,10 @@ export class Parser extends Reader {
         };
     }
 
-    parseVersionMin(type: any, buf: any) {
-        if (buf.length !== 8)
-            throw new Error('min version OOB');
-
+    parseVersionMin(type: any, buf: any): VersionMin {
+        if (buf.length !== 8) {
+            throw new Error("min version OOB");
+        }
         return {
             type: type,
             version: super.readUInt16(buf, 2) + '.' + buf[1] + '.' + buf[0],
@@ -448,6 +452,170 @@ export class Parser extends Reader {
     }
 };
 
-// NOTE: returned addresses are relative to the "base address", i.e.
+export interface LoadDylib {
+    type: any,
+    name: string,
+    timestamp: number,
+    current_version: number,
+    compatibility_version: number
+}
+
+export interface Dylinker {
+    type: any,
+    cmd: string
+}
+
+export interface VersionMin {
+    type: any,
+    version: string,
+    sdk: string
+}
+
+export interface Rpath {
+    type: any,
+    name: string
+}
+
+export interface Symtab {
+    type: string,
+    symoff: number,
+    nsyms: number,
+    stroff: number,
+    strsize: number,
+}
+
+export interface FunctionStart {
+    type: string,
+    dataoff: any,
+    datasize: any,
+    addresses: any
+}
+
+export interface Symseg {
+    type: string,
+    offset: number,
+    size: number
+}
+
+export interface LinkEdit {
+    type: string,
+    dataoff: number,
+    datasize: number
+}
+
+export interface EncryptionInfo {
+    type: string,
+    offset: number,
+    size: number,
+    id: number
+};
+//NOTE: returned addresses are relative to the "base address", i.e.
 //       the vmaddress of the first "non-null" segment [e.g. initproto!=0]
 //       (i.e. __TEXT ?)
+function subtypeFromCpu(endian: string, cputype: string, cpusubtype: number) {
+    if (endian === 'multiple') {
+        return "all";
+    }
+    if (cpusubtype === 0) {
+        return 'none';
+    }
+    return constants.cpuSubType[cputype][cpusubtype];
+}
+
+function endianFromCpu(cpusubtype: number): string {
+    if ((cpusubtype & constants.endian.multiple) === constants.endian.multiple) {
+        return "multiple";
+    }
+    if (cpusubtype & constants.endian.be) {
+        return "be";
+    }
+    return "le";
+}
+
+export interface SectionAttribute {
+    usr: any,
+    sys: any
+}
+
+export interface Section {
+    sectname: string,
+    segname: string,
+    addr: number,
+    size: number,
+    offset: number,
+    align: number,
+    reloff: number,
+    nreloc: number,
+    type: string,
+    attributes: SectionAttribute,
+    data: Buffer
+}
+
+export interface SegmentCmd {
+    type: string,
+    name: string,
+    vmaddr: number,
+    vmsize: number,
+    fileoff: number,
+    filesize: number,
+    maxprot: Protection,
+    initprot: Protection,
+    nsects: number,
+    flags: any, ///this.mapFlags(flags, constants.segFlag),
+    sections: Section[]
+}
+
+export interface Protection {
+    read: boolean,
+    write: boolean,
+    exec: boolean,
+}
+export interface CpuInfo {
+    type: string,
+    subtype: number,
+    endian: string
+}
+export interface Header {
+    bits: number,
+    magic: number,
+    cpu: CpuInfo,
+    filetype: string,
+    ncmds: number,
+    sizeofcmds: number,
+    flags: any,
+    cmds: any,
+    hsize: number,
+    body?: Buffer
+}
+type LoadCommand = SegmentCmd | Symseg | Main | LinkEdit | Symtab | Rpath | Dylinker | Dysymtab | LoadDylib | VersionMin | UnknownLoadCommand;
+export interface Dysymtab {
+    type: string,
+    ilocalsym: number,
+    nlocalsym: number,
+    iextdefsym: number,
+    nextdefsym: number,
+    iundefsym: number,
+    nundefsym: number,
+    tocoff: number,
+    ntoc: number,
+    modtaboff: number,
+    nmodtab: number,
+    extrefsymoff: number,
+    nextrefsyms: number,
+    indirectsymoff: number,
+    nindirectsyms: number,
+    extreloff: number,
+    nextrel: number,
+    locreloff: number,
+    nlocrel: number
+};
+
+export interface UnknownLoadCommand {
+    type: string,
+    data: Buffer
+}
+export interface Main {
+    type: string,
+    entryoff: number,
+    stacksize: number,
+};
