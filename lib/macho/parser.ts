@@ -1,5 +1,6 @@
 import { Reader } from "./endian-reader.js";
 import { constants } from "./constants.js";
+import Buffer from "buffer";
 
 export class Parser extends Reader {
     execute(buf: Buffer) : Header {
@@ -17,11 +18,11 @@ export class Parser extends Reader {
 
     parseLCStr(buf: Buffer, off: number): string {
         if (off + 4 > buf.length) {
-            throw new Error('lc_str OOB');
+            throw new Error("lc_str OOB");
         }
         const offset = super.readUInt32(buf, off) - 8;
         if (offset > buf.length) {
-            throw new Error('lc_str offset OOB');
+            throw new Error("lc_str offset OOB");
         }
         return this.parseCStr(buf.subarray(offset));
     }
@@ -136,6 +137,7 @@ export class Parser extends Reader {
 
         return cmds;
     }
+
     parseFunctionStarts(type: any, buf: any, file: any): FunctionStart {
         if (buf.length !== 8) {
             throw new Error('function_starts OOB');
@@ -155,10 +157,12 @@ export class Parser extends Reader {
             delta |= (data[i] & 0x7f) << shift;
             if ((data[i] & 0x80) !== 0) { // delta value not finished yet
                 shift += 7;
-                if (shift > 24)
+                if (shift > 24) {
                     throw new Error('function_starts delta too large');
-                if (i + 1 === data.length)
+                }
+                if (i + 1 === data.length) {
                     throw new Error('function_starts delta truncated');
+                }
             } else if (delta === 0) { // end of table
                 break;
             } else {
@@ -215,16 +219,16 @@ export class Parser extends Reader {
             return res;
         }
 
-        const sectSize = type === 'segment' ? 32 + 9 * 4 : 32 + 8 * 4 + 2 * 8;
+        const sectSize = type === "segment" ? 32 + 9 * 4 : 32 + 8 * 4 + 2 * 8;
         const sections: any = [];
         for (let i = 0, off = total; i < nsects; i++, off += sectSize) {
             if (off + sectSize > buf.length) {
-                throw new Error('Segment OOB');
+                throw new Error("Segment OOB");
             }
             const sectname = this.parseCStr(buf.subarray(off, off + 16));
             const segname = this.parseCStr(buf.subarray(off + 16, off + 32));
 
-            if (type === 'segment') {
+            if (type === "segment") {
                 var addr = super.readUInt32(buf, off + 32);
                 var size = super.readUInt32(buf, off + 36);
                 var offset = super.readUInt32(buf, off + 40);
@@ -450,7 +454,7 @@ export class Parser extends Reader {
             sdk: super.readUInt16(buf, 6) + '.' + buf[5] + '.' + buf[4]
         };
     }
-};
+}
 
 export interface LoadDylib {
     type: any,
@@ -508,28 +512,6 @@ export interface EncryptionInfo {
     offset: number,
     size: number,
     id: number
-};
-//NOTE: returned addresses are relative to the "base address", i.e.
-//       the vmaddress of the first "non-null" segment [e.g. initproto!=0]
-//       (i.e. __TEXT ?)
-function subtypeFromCpu(endian: string, cputype: string, cpusubtype: number) {
-    if (endian === 'multiple') {
-        return "all";
-    }
-    if (cpusubtype === 0) {
-        return 'none';
-    }
-    return constants.cpuSubType[cputype][cpusubtype];
-}
-
-function endianFromCpu(cpusubtype: number): string {
-    if ((cpusubtype & constants.endian.multiple) === constants.endian.multiple) {
-        return "multiple";
-    }
-    if (cpusubtype & constants.endian.be) {
-        return "be";
-    }
-    return "le";
 }
 
 export interface SectionAttribute {
@@ -570,11 +552,13 @@ export interface Protection {
     write: boolean,
     exec: boolean,
 }
+
 export interface CpuInfo {
     type: string,
     subtype: number,
     endian: string
 }
+
 export interface Header {
     bits: number,
     magic: number,
@@ -587,7 +571,7 @@ export interface Header {
     hsize: number,
     body?: Buffer
 }
-type LoadCommand = SegmentCmd | Symseg | Main | LinkEdit | Symtab | Rpath | Dylinker | Dysymtab | LoadDylib | VersionMin | UnknownLoadCommand;
+
 export interface Dysymtab {
     type: string,
     ilocalsym: number,
@@ -614,8 +598,34 @@ export interface UnknownLoadCommand {
     type: string,
     data: Buffer
 }
+
 export interface Main {
     type: string,
     entryoff: number,
     stacksize: number,
 };
+
+type LoadCommand = SegmentCmd | Symseg | Main | LinkEdit | Symtab | Rpath | Dylinker | Dysymtab | LoadDylib | VersionMin | UnknownLoadCommand;
+
+//NOTE: returned addresses are relative to the "base address", i.e.
+//       the vmaddress of the first "non-null" segment [e.g. initproto!=0]
+//       (i.e. __TEXT ?)
+function subtypeFromCpu(endian: string, cputype: string, cpusubtype: number) {
+    if (endian === 'multiple') {
+        return "all";
+    }
+    if (cpusubtype === 0) {
+        return 'none';
+    }
+    return constants.cpuSubType[cputype][cpusubtype];
+}
+
+function endianFromCpu(cpusubtype: number): string {
+    if ((cpusubtype & constants.endian.multiple) === constants.endian.multiple) {
+        return "multiple";
+    }
+    if (cpusubtype & constants.endian.be) {
+        return "be";
+    }
+    return "le";
+}
